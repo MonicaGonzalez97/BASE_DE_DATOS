@@ -1,0 +1,129 @@
+-- FACTURACIÓN SIMPLE SIN IMPUESTOS (MySQL 8+)
+CREATE DATABASE IF NOT EXISTS facturacion
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_spanish_ci;
+USE facturacion;
+
+-- ========= Seguridad =========
+CREATE TABLE rol (
+  id_rol INT AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(50) NOT NULL UNIQUE,
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE usuario (
+  id_usuario INT AUTO_INCREMENT PRIMARY KEY,
+  nombre_usuario VARCHAR(100) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  id_rol INT NOT NULL,
+  activo BIT(1) NOT NULL DEFAULT b'1',
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_usuario_rol FOREIGN KEY (id_rol) REFERENCES rol(id_rol)
+) ENGINE=InnoDB;
+
+-- ========= Terceros (emisor y receptor en la misma tabla) =========
+CREATE TABLE cliente (
+  id_cliente INT AUTO_INCREMENT PRIMARY KEY,
+  nit VARCHAR(20) NOT NULL UNIQUE,
+  nombre VARCHAR(100) NOT NULL,
+  direccion VARCHAR(200),
+  activo BIT(1) NOT NULL DEFAULT b'1',
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- ========= Productos =========
+CREATE TABLE producto (
+  id_producto INT AUTO_INCREMENT PRIMARY KEY,
+  sku VARCHAR(50) UNIQUE,
+  nombre VARCHAR(100) NOT NULL,
+  descripcion TEXT,
+  precio_unitario DECIMAL(12,2) NOT NULL,
+  cantidad INT NOT NULL DEFAULT 0,
+  activo BIT(1) NOT NULL DEFAULT b'1',
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CHECK (precio_unitario >= 0),
+  CHECK (cantidad >= 0)
+) ENGINE=InnoDB;
+
+-- ========= Factura (con certificación embebida; SIN impuestos) =========
+-- estado: 0=Borrador, 1=Confirmada, 2=Certificada, 3=Cancelada
+CREATE TABLE factura (
+  id_factura INT AUTO_INCREMENT PRIMARY KEY,
+  uuid CHAR(36) NOT NULL UNIQUE,
+
+  id_cliente_emisor   INT NOT NULL,
+  id_cliente_receptor INT NOT NULL,
+
+  id_usuario INT NOT NULL,                 -- quien crea/emite
+  fecha_emision DATETIME NOT NULL,
+
+  estado TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  eliminado BIT(1) NOT NULL DEFAULT b'0',
+
+  -- Totales (sin impuestos)
+  subtotal DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  total    DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+
+  observaciones VARCHAR(255),
+
+  -- Certificación dentro de factura
+  numero_autorizacion VARCHAR(50) UNIQUE NULL,
+  serie VARCHAR(10) NULL,
+  correlativo INT NULL,
+  fecha_certificacion DATETIME NULL,
+
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  CONSTRAINT fk_factura_emisor   FOREIGN KEY (id_cliente_emisor)   REFERENCES cliente(id_cliente),
+  CONSTRAINT fk_factura_receptor FOREIGN KEY (id_cliente_receptor) REFERENCES cliente(id_cliente),
+  CONSTRAINT fk_factura_usuario  FOREIGN KEY (id_usuario)          REFERENCES usuario(id_usuario),
+  CHECK (estado IN (0,1,2,3))
+) ENGINE=InnoDB;
+
+-- Único por (serie, correlativo) cuando existan (permite múltiples NULL)
+CREATE UNIQUE INDEX ux_factura_serie_correlativo ON factura (serie, correlativo);
+CREATE INDEX idx_factura_fecha ON factura (fecha_emision);
+
+-- ========= Detalle (SIN impuestos) =========
+CREATE TABLE detalle_factura (
+  id_detalle INT AUTO_INCREMENT PRIMARY KEY,
+  id_factura INT NOT NULL,
+  id_producto INT NULL,                     -- opcional (línea manual)
+  descripcion VARCHAR(255) NOT NULL,
+  cantidad INT NOT NULL,
+  precio_unitario DECIMAL(12,2) NOT NULL,
+  descuento DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+
+  -- Subtotal de la línea (sin impuestos)
+  subtotal DECIMAL(12,2) NOT NULL,          -- (cantidad * precio_unitario) - descuento
+
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  CONSTRAINT fk_detalle_factura  FOREIGN KEY (id_factura)  REFERENCES factura(id_factura) ON DELETE CASCADE,
+  CONSTRAINT fk_detalle_producto FOREIGN KEY (id_producto) REFERENCES producto(id_producto),
+  CHECK (cantidad > 0),
+  CHECK (precio_unitario >= 0),
+  CHECK (descuento >= 0)
+) ENGINE=InnoDB;
+
+CREATE INDEX idx_detalle_factura ON detalle_factura (id_factura);
+
+-- ========= Bitácora =========
+-- tipo_evento: 1=Certificación, 2=Anulación, 3=Actualización, etc.
+CREATE TABLE bitacora_certificacion (
+  id_bitacora INT AUTO_INCREMENT PRIMARY KEY,
+  id_factura INT NOT NULL,
+  tipo_evento TINYINT UNSIGNED NOT NULL,
+  fecha_evento DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id_usuario INT NOT NULL,
+  comentario VARCHAR(255),
+
+  CONSTRAINT fk_bitacora_factura FOREIGN KEY (id_factura) REFERENCES factura(id_factura),
+  CONSTRAINT fk_bitacora_usuario FOREIGN KEY (id_usuario) REFERENCES usuario(id_usuario)
+) ENGINE=InnoDB;
